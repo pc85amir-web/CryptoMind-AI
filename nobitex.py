@@ -9,7 +9,7 @@ def get_market_stats():
 
     url = f"{BASE_URL}/market/stats"
 
-    response = requests.get(url, timeout=20)
+    response = requests.get(url, timeout=(4, 8), headers={"User-Agent": "CryptoMindAI/1.0"})
     response.raise_for_status()
 
     data = response.json()
@@ -70,7 +70,8 @@ def get_candles(symbol, resolution="15", countback=150):
     response = requests.get(
         url,
         params=params,
-        timeout=20
+        timeout=(4, 8),
+        headers={"User-Agent": "CryptoMindAI/1.0"}
     )
 
     response.raise_for_status()

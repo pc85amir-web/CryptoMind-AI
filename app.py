@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -10,8 +11,8 @@ import plotly.graph_objects as go
 from nobitex import get_market_stats, get_candles
 from signals import analyze_market
 from nobitex_account import (
-    NobitexAccountError, is_configured, get_wallets, get_open_orders,
-    get_recent_orders, get_recent_trades,
+    NobitexAccountError, is_configured, get_profile, get_wallets, get_open_orders,
+    get_recent_orders, get_recent_trades, get_wallet_transactions,
 )
 
 
@@ -63,7 +64,38 @@ def init_database():
                 notes TEXT
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS account_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                captured_at TEXT NOT NULL,
+                wallets_json TEXT NOT NULL,
+                open_orders_json TEXT NOT NULL,
+                recent_orders_json TEXT NOT NULL,
+                recent_trades_json TEXT NOT NULL
+            )
+        """)
         conn.commit()
+
+
+def save_account_snapshot(wallets, open_orders, recent_orders, recent_trades):
+    with db_connection() as conn:
+        conn.execute(
+            "INSERT INTO account_snapshots (captured_at, wallets_json, open_orders_json, recent_orders_json, recent_trades_json) VALUES (?, ?, ?, ?, ?)",
+            (now_text(), json.dumps(wallets, ensure_ascii=False),
+             json.dumps(open_orders, ensure_ascii=False),
+             json.dumps(recent_orders, ensure_ascii=False),
+             json.dumps(recent_trades, ensure_ascii=False)),
+        )
+        conn.commit()
+
+
+def get_account_snapshot_history(limit=20):
+    with db_connection() as conn:
+        rows = conn.execute(
+            "SELECT captured_at FROM account_snapshots ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_trades(status=None):
@@ -153,8 +185,8 @@ st.markdown(
 st.title("🧠 CryptoMind AI")
 st.subheader("دستیار هوشمند تحلیل بازار ارزهای دیجیتال")
 st.info(
-    "نسخه آزمایشی: تحلیل تکنیکال و دفتر معاملات آزمایشی. "
-    "اخبار و شبکه اجتماعی X هنوز به برنامه متصل نشده‌اند."
+    "نسخه فعلی: تحلیل تکنیکال بازار + مرکز نظارت فقط‌خواندنی حساب نوبیتکس. "
+    "اتصال اخبار و شبکه اجتماعی X هنوز در مراحل بعدی توسعه است."
 )
 
 # -------------------- دریافت بازار و تحلیل --------------------
@@ -251,7 +283,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🟢 فرصت‌های خرید",
     "🔴 فرصت‌های نزولی",
     "📈 تحلیل کامل ارز",
-    "📋 دفتر آزمایشی",
+    "🧪 آزمایش (اختیاری)",
     "⚙️ تنظیمات",
     "🔐 حساب نوبیتکس",
 ])
@@ -361,7 +393,7 @@ with tab3:
 
 # -------------------- تب معاملات آزمایشی --------------------
 with tab4:
-    st.header("دفتر ثبت معاملات آزمایشی")
+    st.header("دفتر ثبت معاملات آزمایشی (اختیاری و جدا از حساب واقعی)")
     st.warning(
         "تمام معاملات این قسمت فرضی هستند. هیچ سفارشی به نوبیتکس ارسال نمی‌شود. "
         "فعلاً فقط معاملات خرید (LONG) قابل ثبت‌اند؛ تحلیل نزولی به معنی "
@@ -523,103 +555,207 @@ with tab4:
 
 # -------------------- تب نظارت فقط‌خواندنی حساب نوبیتکس --------------------
 with tab6:
-    st.header("🔐 نظارت بر حساب واقعی نوبیتکس")
+    st.header("🔐 مرکز نظارت بر حساب نوبیتکس")
     st.info(
-        "این بخش فقط اطلاعات حساب، کیف‌پول‌ها، سفارش‌ها و معاملات انجام‌شده را می‌خواند. "
-        "در این نسخه هیچ کدی برای ثبت سفارش، لغو سفارش یا برداشت وجه وجود ندارد."
+        "اتصال این بخش فقط‌خواندنی است: موجودی، سفارش‌ها، معاملات و گردش کیف‌پول را نمایش می‌دهد. "
+        "هیچ تابعی برای ثبت سفارش، لغو سفارش یا برداشت وجه در این برنامه وجود ندارد."
     )
-    st.caption(
-        "برای امنیت، کلید API را داخل این صفحه وارد نکن. آن را فقط در بخش Environment سرویس Render "
-        "با نام NOBITEX_API_TOKEN ثبت می‌کنیم. کلید باید فقط مجوز مشاهده داشته باشد؛ "
-        "مجوز معامله و برداشت را فعال نکن."
-    )
-    if not is_configured():
-        st.warning(
-            "اتصال هنوز فعال نشده است؛ چون کلید دسترسی امن در Render تنظیم نشده. "
-            "وقتی حساب نوبیتکس را ساختی، از پنل نوبیتکس یک کلید API فقط‌خواندنی می‌سازیم."
-        )
-        st.markdown("**مراحل بعد از ساخت حساب:**\n1. ساخت API Key با مجوز مشاهده موجودی، سفارش‌ها و معاملات.\n2. ثبت آن در Render → سرویس CryptoMind-AI → Environment.\n3. افزودن متغیر `NOBITEX_API_TOKEN` و مقدار کلید.\n4. ذخیره و راه‌اندازی مجدد سرویس.")
-    else:
-        if st.button("🔄 دریافت اطلاعات حساب از نوبیتکس", key="refresh_nobitex_account"):
-            st.cache_data.clear()
-        try:
-            with st.spinner("در حال دریافت اطلاعات حساب..."):
-                wallets = get_wallets()
-                open_orders = get_open_orders()
-                recent_orders = get_recent_orders()
-                recent_trades = get_recent_trades()
-            st.success("اطلاعات حساب با موفقیت دریافت شد.")
-            st.caption(f"آخرین دریافت: {now_text()} به وقت تهران")
 
-            wallet_rows = []
-            for w in wallets:
-                balance = float(w.get("balance") or 0)
-                blocked = float(w.get("blockedBalance") or 0)
+    if not is_configured():
+        st.warning("هنوز کلید API در Render ثبت نشده است؛ بنابراین اتصال حساب فعال نیست.")
+        st.markdown("""
+**برای اتصال امن، بعد از ساخت حساب نوبیتکس:**
+1. در نوبیتکس یک API Key بساز و فقط مجوز **READ / مشاهده** را فعال کن.
+2. اگر امکان محدودکردن IP وجود داشت، IP سرویس را طبق راهنمای Render محدود کن.
+3. در Render وارد سرویس `CryptoMind-AI` شو و بخش `Environment` را باز کن.
+4. دو متغیر زیر را جداگانه اضافه کن:
+   - `NOBITEX_API_PUBLIC_KEY` = کلید عمومی
+   - `NOBITEX_API_PRIVATE_KEY` = کلید خصوصی
+5. ذخیره کن تا Render نسخه را دوباره راه‌اندازی کند.
+
+**نکته امنیتی:** کلیدها را در GitHub، کد برنامه، پیام یا تصویر برای من نفرست. مجوزهای معامله و برداشت را فعال نکن.
+        """)
+    else:
+        st.success("کلیدهای اتصال پیدا شد. برای دریافت اطلاعات حساب، دکمه زیر را بزن.")
+        refresh_account = st.button("🔄 همگام‌سازی اطلاعات حساب", type="primary", key="sync_real_nobitex")
+        if refresh_account:
+            try:
+                with st.spinner("در حال دریافت اطلاعات از نوبیتکس..."):
+                    profile = get_profile()
+                    wallets = get_wallets()
+                    open_orders = get_open_orders()
+                    recent_orders = get_recent_orders()
+                    recent_trades = get_recent_trades()
+                save_account_snapshot(wallets, open_orders, recent_orders, recent_trades)
+                st.session_state["nobitex_last_sync"] = {
+                    "profile": profile,
+                    "wallets": wallets,
+                    "open_orders": open_orders,
+                    "recent_orders": recent_orders,
+                    "recent_trades": recent_trades,
+                    "captured_at": now_text(),
+                }
+                st.success("همگام‌سازی با موفقیت انجام شد و نسخه‌ای از اطلاعات در پایگاه داده برنامه ذخیره شد.")
+            except NobitexAccountError as error:
+                st.error(str(error))
+            except Exception as error:
+                st.error(f"خطای غیرمنتظره هنگام همگام‌سازی: {error}")
+
+        account_data = st.session_state.get("nobitex_last_sync")
+        if account_data:
+            wallets = account_data["wallets"]
+            open_orders = account_data["open_orders"]
+            recent_orders = account_data["recent_orders"]
+            recent_trades = account_data["recent_trades"]
+            profile = account_data.get("profile", {})
+            st.caption(f"آخرین همگام‌سازی موفق: {account_data['captured_at']} به وقت تهران")
+            if profile:
+                display_name = " ".join(str(profile.get(k, "")).strip() for k in ("firstName", "lastName")).strip()
+                if display_name:
+                    st.caption(f"حساب متصل: {display_name}")
+
+            nonzero_wallets = []
+            total_rial_value = 0.0
+            for wallet in wallets:
+                balance = float(wallet.get("balance") or 0)
+                blocked = float(wallet.get("blockedBalance") or 0)
+                active = float(wallet.get("activeBalance") or max(balance - blocked, 0))
+                rial_value = float(wallet.get("rialBalanceSell") or wallet.get("rialBalance") or 0)
                 if balance or blocked:
-                    wallet_rows.append({
-                        "ارز": str(w.get("currency", "")).upper(),
+                    nonzero_wallets.append({
+                        "ارز": str(wallet.get("currency", "")).upper(),
                         "موجودی کل": balance,
                         "موجودی مسدود": blocked,
-                        "موجودی قابل استفاده": float(w.get("activeBalance") or max(balance-blocked, 0)),
+                        "موجودی قابل استفاده": active,
+                        "ارزش تقریبی به ریال (طبق API)": rial_value,
                     })
-            st.subheader("موجودی کیف‌پول‌ها")
-            if wallet_rows:
-                st.dataframe(pd.DataFrame(wallet_rows), use_container_width=True, hide_index=True)
-            else:
-                st.info("موجودی غیرصفر در کیف‌پول‌ها پیدا نشد.")
+                    total_rial_value += rial_value
 
-            st.subheader("سفارش‌های باز")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("کیف‌پول‌های دارای موجودی", len(nonzero_wallets))
+            m2.metric("سفارش‌های باز", len(open_orders))
+            m3.metric("سفارش‌های دریافت‌شده", len(recent_orders))
+            m4.metric("معاملات اخیر دریافت‌شده", len(recent_trades))
+            if total_rial_value:
+                st.metric("ارزش تقریبی کل دارایی به تومان", f"{total_rial_value / 10:,.0f}")
+                st.caption("ارزش ریالی بر اساس فیلد ارزش دارایی برگشتی از API نوبیتکس است و ممکن است با قیمت قابل اجرای لحظه‌ای تفاوت داشته باشد.")
+
+            st.subheader("💰 موجودی و ارزش دارایی‌ها")
+            if nonzero_wallets:
+                st.dataframe(pd.DataFrame(nonzero_wallets), use_container_width=True, hide_index=True)
+            else:
+                st.info("در پاسخ فعلی، کیف‌پول دارای موجودی پیدا نشد.")
+
+            st.subheader("🟠 سفارش‌های باز")
             if open_orders:
-                odf = pd.DataFrame([{
-                    "شناسه سفارش": o.get("id"),
-                    "بازار": o.get("market") or f"{o.get('srcCurrency','')} / {o.get('dstCurrency','')}",
-                    "نوع": "خرید" if o.get("type") == "buy" else "فروش",
-                    "وضعیت": o.get("status"),
-                    "قیمت سفارش": o.get("price"),
-                    "مقدار سفارش": o.get("amount"),
-                    "مقدار انجام‌شده": o.get("matchedAmount"),
-                    "میانگین اجرا": o.get("averagePrice"),
-                    "زمان ثبت": o.get("created_at"),
-                } for o in open_orders])
-                st.dataframe(odf, use_container_width=True, hide_index=True)
+                open_df = pd.DataFrame([{
+                    "شناسه سفارش": order.get("id"),
+                    "بازار": order.get("market") or f"{order.get('srcCurrency', '')} / {order.get('dstCurrency', '')}",
+                    "نوع": "خرید" if str(order.get("type", "")).lower() == "buy" else "فروش",
+                    "وضعیت": order.get("status"),
+                    "قیمت سفارش": order.get("price"),
+                    "مقدار سفارش": order.get("amount"),
+                    "مقدار انجام‌شده": order.get("matchedAmount"),
+                    "مقدار باقی‌مانده": order.get("unmatchedAmount"),
+                    "میانگین اجرای فعلی": order.get("averagePrice"),
+                    "زمان ثبت": order.get("created_at"),
+                } for order in open_orders])
+                st.dataframe(open_df, use_container_width=True, hide_index=True)
             else:
-                st.info("در حال حاضر سفارش بازی وجود ندارد.")
+                st.success("در حال حاضر سفارش بازی وجود ندارد.")
 
-            st.subheader("آخرین سفارش‌ها")
+            st.subheader("📑 تاریخچه سفارش‌ها")
             if recent_orders:
-                rdf = pd.DataFrame([{
-                    "شناسه": o.get("id"), "بازار": o.get("market") or f"{o.get('srcCurrency','')} / {o.get('dstCurrency','')}",
-                    "نوع": "خرید" if o.get("type") == "buy" else "فروش",
-                    "وضعیت": o.get("status"), "قیمت": o.get("price"),
-                    "مقدار": o.get("amount"), "انجام‌شده": o.get("matchedAmount"),
-                    "میانگین اجرا": o.get("averagePrice"), "کارمزد": o.get("fee"),
-                    "زمان": o.get("created_at"),
-                } for o in recent_orders])
-                st.dataframe(rdf, use_container_width=True, hide_index=True)
+                orders_df = pd.DataFrame([{
+                    "شناسه": order.get("id"),
+                    "بازار": order.get("market") or f"{order.get('srcCurrency', '')} / {order.get('dstCurrency', '')}",
+                    "نوع": "خرید" if str(order.get("type", "")).lower() == "buy" else "فروش",
+                    "وضعیت": order.get("status"),
+                    "قیمت": order.get("price"),
+                    "مقدار": order.get("amount"),
+                    "انجام‌شده": order.get("matchedAmount"),
+                    "میانگین اجرا": order.get("averagePrice"),
+                    "کارمزد": order.get("fee"),
+                    "زمان ثبت": order.get("created_at"),
+                } for order in recent_orders])
+                st.dataframe(orders_df, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "⬇️ دانلود تاریخچه سفارش‌ها (CSV)",
+                    orders_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="nobitex_orders.csv", mime="text/csv",
+                )
             else:
-                st.info("سفارشی برای نمایش دریافت نشد.")
+                st.info("سفارشی در پاسخ فعلی دریافت نشد.")
 
-            st.subheader("معاملات انجام‌شده اخیر")
+            st.subheader("⚡ معاملات اجراشده اخیر")
             if recent_trades:
-                tdf = pd.DataFrame([{
-                    "شناسه معامله": t.get("id"), "شناسه سفارش": t.get("orderId"),
-                    "بازار": t.get("market"), "نوع": "خرید" if t.get("type") == "buy" else "فروش",
-                    "قیمت اجرا": t.get("price"), "مقدار": t.get("amount"),
-                    "ارزش کل": t.get("total"), "کارمزد": t.get("fee"), "زمان اجرا": t.get("timestamp"),
-                } for t in recent_trades])
-                st.dataframe(tdf, use_container_width=True, hide_index=True)
+                trades_df = pd.DataFrame([{
+                    "شناسه معامله": trade.get("id"),
+                    "شناسه سفارش": trade.get("orderId"),
+                    "بازار": trade.get("market"),
+                    "نوع": "خرید" if str(trade.get("type", "")).lower() == "buy" else "فروش",
+                    "قیمت اجرا": trade.get("price"),
+                    "مقدار": trade.get("amount"),
+                    "ارزش کل": trade.get("total"),
+                    "کارمزد": trade.get("fee"),
+                    "زمان اجرا": trade.get("timestamp"),
+                } for trade in recent_trades])
+                st.dataframe(trades_df, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "⬇️ دانلود معاملات اجراشده (CSV)",
+                    trades_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="nobitex_fills.csv", mime="text/csv",
+                )
             else:
                 st.info("معامله‌ای در بازه اخیر API دریافت نشد.")
-            st.warning(
-                "توجه: سود و زیان دقیق هر دارایی هنوز محاسبه نمی‌شود؛ برای این کار باید تاریخچه کامل "
-                "خریدها، فروش‌ها، واریزها، برداشت‌ها و کارمزدها به‌صورت پیوسته ذخیره و با روش FIFO تطبیق داده شود. "
-                "فهرست معاملات این API به‌صورت پیش‌فرض فقط معاملات چند روز اخیر را برمی‌گرداند."
-            )
-        except NobitexAccountError as error:
-            st.error(str(error))
-        except Exception as error:
-            st.error(f"خطای پیش‌بینی‌نشده در نمایش حساب: {error}")
 
+            st.subheader("🧾 گردش کیف‌پول و واریز/برداشت/معامله")
+            transaction_wallets = [w for w in wallets if w.get("id") and (float(w.get("balance") or 0) != 0 or float(w.get("blockedBalance") or 0) != 0)]
+            if transaction_wallets:
+                selected_wallet = st.selectbox(
+                    "انتخاب کیف‌پول برای مشاهده گردش",
+                    transaction_wallets,
+                    format_func=lambda w: f"{str(w.get('currency', '')).upper()} — شناسه {w.get('id')}",
+                    key="wallet_transactions_choice",
+                )
+                if st.button("نمایش گردش این کیف‌پول", key="load_wallet_transactions"):
+                    try:
+                        with st.spinner("در حال دریافت گردش کیف‌پول..."):
+                            tx_data = get_wallet_transactions(selected_wallet["id"], page=1, page_size=50)
+                        txs = tx_data.get("transactions", [])
+                        st.session_state["nobitex_wallet_transactions"] = txs
+                        st.session_state["nobitex_wallet_tx_currency"] = selected_wallet.get("currency", "")
+                    except NobitexAccountError as error:
+                        st.error(str(error))
+                txs = st.session_state.get("nobitex_wallet_transactions", [])
+                if txs:
+                    tx_df = pd.DataFrame([{
+                        "ارز": tx.get("currency"),
+                        "مقدار تغییر": tx.get("amount"),
+                        "کارمزد": tx.get("calculatedFee"),
+                        "شرح": tx.get("description"),
+                        "زمان": tx.get("created_at"),
+                        "شناسه": tx.get("id"),
+                    } for tx in txs])
+                    st.dataframe(tx_df, use_container_width=True, hide_index=True)
+                elif "nobitex_wallet_transactions" in st.session_state:
+                    st.info("گردشی برای این کیف‌پول در صفحه اول پیدا نشد.")
+            else:
+                st.info("برای کیف‌پول‌های بدون موجودی، گردش را فعلاً از این قسمت انتخاب نمی‌کنیم.")
+
+            st.subheader("🗃️ سوابق همگام‌سازی در این برنامه")
+            st.caption("این سوابق فعلاً در SQLite محلی سرویس ذخیره می‌شوند. فضای دیسک Render رایگان ممکن است با راه‌اندازی مجدد یا انتشار نسخه جدید پاک شود؛ برای نگهداری دائمی باید دیسک پایدار یا پایگاه داده بیرونی متصل کنیم.")
+            sync_history = get_account_snapshot_history(20)
+            if sync_history:
+                st.dataframe(pd.DataFrame(sync_history), use_container_width=True, hide_index=True)
+            st.warning(
+                "محدودیت مهم محاسبه سود/زیان: API معاملات اخیر نوبیتکس به‌صورت پیش‌فرض فقط بازه اخیر (حدود ۳ روز) را برمی‌گرداند. "
+                "برای محاسبه سود/زیان واقعی و مادام‌العمر باید تاریخچه کامل از زمان شروع دارایی، واریزها، برداشت‌ها، "
+                "انتقال‌ها و کارمزدها جمع‌آوری شود. بنابراین فعلاً عدد سود/زیان کل حساب را حدس نمی‌زنیم و نمایش نمی‌دهیم. "
+                "پس از شروع همگام‌سازی منظم، می‌توانیم گزارش دقیق‌تری برای داده‌های ثبت‌شده بسازیم؛ داده‌های قبل از اولین اتصال ممکن است نیاز به دریافت و تطبیق جداگانه داشته باشند."
+            )
+        else:
+            st.info("برای شروع، روی «همگام‌سازی اطلاعات حساب» بزن تا اولین دریافت ثبت شود.")
 
 # -------------------- تب تنظیمات --------------------
 with tab5:

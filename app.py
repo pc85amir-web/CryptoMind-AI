@@ -9,6 +9,10 @@ import plotly.graph_objects as go
 
 from nobitex import get_market_stats, get_candles
 from signals import analyze_market
+from nobitex_account import (
+    NobitexAccountError, is_configured, get_wallets, get_open_orders,
+    get_recent_orders, get_recent_trades,
+)
 
 
 # -------------------- تنظیمات پایه --------------------
@@ -243,12 +247,13 @@ short_markets = (
     .head(3)
 )
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🟢 فرصت‌های خرید",
     "🔴 فرصت‌های نزولی",
     "📈 تحلیل کامل ارز",
-    "📋 معاملات آزمایشی",
+    "📋 دفتر آزمایشی",
     "⚙️ تنظیمات",
+    "🔐 حساب نوبیتکس",
 ])
 
 
@@ -513,6 +518,107 @@ with tab4:
         )
     else:
         st.info("هنوز معامله بسته‌شده‌ای در تاریخچه وجود ندارد.")
+
+
+
+# -------------------- تب نظارت فقط‌خواندنی حساب نوبیتکس --------------------
+with tab6:
+    st.header("🔐 نظارت بر حساب واقعی نوبیتکس")
+    st.info(
+        "این بخش فقط اطلاعات حساب، کیف‌پول‌ها، سفارش‌ها و معاملات انجام‌شده را می‌خواند. "
+        "در این نسخه هیچ کدی برای ثبت سفارش، لغو سفارش یا برداشت وجه وجود ندارد."
+    )
+    st.caption(
+        "برای امنیت، کلید API را داخل این صفحه وارد نکن. آن را فقط در بخش Environment سرویس Render "
+        "با نام NOBITEX_API_TOKEN ثبت می‌کنیم. کلید باید فقط مجوز مشاهده داشته باشد؛ "
+        "مجوز معامله و برداشت را فعال نکن."
+    )
+    if not is_configured():
+        st.warning(
+            "اتصال هنوز فعال نشده است؛ چون کلید دسترسی امن در Render تنظیم نشده. "
+            "وقتی حساب نوبیتکس را ساختی، از پنل نوبیتکس یک کلید API فقط‌خواندنی می‌سازیم."
+        )
+        st.markdown("**مراحل بعد از ساخت حساب:**\n1. ساخت API Key با مجوز مشاهده موجودی، سفارش‌ها و معاملات.\n2. ثبت آن در Render → سرویس CryptoMind-AI → Environment.\n3. افزودن متغیر `NOBITEX_API_TOKEN` و مقدار کلید.\n4. ذخیره و راه‌اندازی مجدد سرویس.")
+    else:
+        if st.button("🔄 دریافت اطلاعات حساب از نوبیتکس", key="refresh_nobitex_account"):
+            st.cache_data.clear()
+        try:
+            with st.spinner("در حال دریافت اطلاعات حساب..."):
+                wallets = get_wallets()
+                open_orders = get_open_orders()
+                recent_orders = get_recent_orders()
+                recent_trades = get_recent_trades()
+            st.success("اطلاعات حساب با موفقیت دریافت شد.")
+            st.caption(f"آخرین دریافت: {now_text()} به وقت تهران")
+
+            wallet_rows = []
+            for w in wallets:
+                balance = float(w.get("balance") or 0)
+                blocked = float(w.get("blockedBalance") or 0)
+                if balance or blocked:
+                    wallet_rows.append({
+                        "ارز": str(w.get("currency", "")).upper(),
+                        "موجودی کل": balance,
+                        "موجودی مسدود": blocked,
+                        "موجودی قابل استفاده": float(w.get("activeBalance") or max(balance-blocked, 0)),
+                    })
+            st.subheader("موجودی کیف‌پول‌ها")
+            if wallet_rows:
+                st.dataframe(pd.DataFrame(wallet_rows), use_container_width=True, hide_index=True)
+            else:
+                st.info("موجودی غیرصفر در کیف‌پول‌ها پیدا نشد.")
+
+            st.subheader("سفارش‌های باز")
+            if open_orders:
+                odf = pd.DataFrame([{
+                    "شناسه سفارش": o.get("id"),
+                    "بازار": o.get("market") or f"{o.get('srcCurrency','')} / {o.get('dstCurrency','')}",
+                    "نوع": "خرید" if o.get("type") == "buy" else "فروش",
+                    "وضعیت": o.get("status"),
+                    "قیمت سفارش": o.get("price"),
+                    "مقدار سفارش": o.get("amount"),
+                    "مقدار انجام‌شده": o.get("matchedAmount"),
+                    "میانگین اجرا": o.get("averagePrice"),
+                    "زمان ثبت": o.get("created_at"),
+                } for o in open_orders])
+                st.dataframe(odf, use_container_width=True, hide_index=True)
+            else:
+                st.info("در حال حاضر سفارش بازی وجود ندارد.")
+
+            st.subheader("آخرین سفارش‌ها")
+            if recent_orders:
+                rdf = pd.DataFrame([{
+                    "شناسه": o.get("id"), "بازار": o.get("market") or f"{o.get('srcCurrency','')} / {o.get('dstCurrency','')}",
+                    "نوع": "خرید" if o.get("type") == "buy" else "فروش",
+                    "وضعیت": o.get("status"), "قیمت": o.get("price"),
+                    "مقدار": o.get("amount"), "انجام‌شده": o.get("matchedAmount"),
+                    "میانگین اجرا": o.get("averagePrice"), "کارمزد": o.get("fee"),
+                    "زمان": o.get("created_at"),
+                } for o in recent_orders])
+                st.dataframe(rdf, use_container_width=True, hide_index=True)
+            else:
+                st.info("سفارشی برای نمایش دریافت نشد.")
+
+            st.subheader("معاملات انجام‌شده اخیر")
+            if recent_trades:
+                tdf = pd.DataFrame([{
+                    "شناسه معامله": t.get("id"), "شناسه سفارش": t.get("orderId"),
+                    "بازار": t.get("market"), "نوع": "خرید" if t.get("type") == "buy" else "فروش",
+                    "قیمت اجرا": t.get("price"), "مقدار": t.get("amount"),
+                    "ارزش کل": t.get("total"), "کارمزد": t.get("fee"), "زمان اجرا": t.get("timestamp"),
+                } for t in recent_trades])
+                st.dataframe(tdf, use_container_width=True, hide_index=True)
+            else:
+                st.info("معامله‌ای در بازه اخیر API دریافت نشد.")
+            st.warning(
+                "توجه: سود و زیان دقیق هر دارایی هنوز محاسبه نمی‌شود؛ برای این کار باید تاریخچه کامل "
+                "خریدها، فروش‌ها، واریزها، برداشت‌ها و کارمزدها به‌صورت پیوسته ذخیره و با روش FIFO تطبیق داده شود. "
+                "فهرست معاملات این API به‌صورت پیش‌فرض فقط معاملات چند روز اخیر را برمی‌گرداند."
+            )
+        except NobitexAccountError as error:
+            st.error(str(error))
+        except Exception as error:
+            st.error(f"خطای پیش‌بینی‌نشده در نمایش حساب: {error}")
 
 
 # -------------------- تب تنظیمات --------------------

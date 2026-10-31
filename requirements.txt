@@ -1,5 +1,5 @@
-streamlit
-pandas
-numpy
-requests
-plotly
+streamlit>=1.36
+pandas>=2.0
+plotly>=5.20
+requests>=2.31
+cryptography>=42.0

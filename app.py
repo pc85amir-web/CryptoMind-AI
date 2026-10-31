@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -203,18 +204,18 @@ selected_timeframe = st.sidebar.selectbox(
     "انتخاب تایم‌فریم", list(timeframes.keys()), index=1
 )
 limit = st.sidebar.slider(
-    "تعداد بازارهای مورد بررسی", min_value=5, max_value=30, value=20
+    "تعداد بازارهای مورد بررسی", min_value=5, max_value=30, value=8
 )
 if st.sidebar.button("🔄 بروزرسانی تحلیل"):
     st.cache_data.clear()
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=90, show_spinner=False)
 def load_markets():
     return get_market_stats()
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=180, show_spinner=False)
 def load_analysis(symbol, timeframe):
     resolution = "D" if timeframe == "W" else timeframe
     candles = get_candles(symbol, resolution, 150)
@@ -239,32 +240,58 @@ def load_analysis(symbol, timeframe):
     return analyze_market(candles), candles
 
 
+# دریافت فهرست بازار با زمان انتظار محدود؛ صفحه نباید بی‌نهایت منتظر بماند.
 try:
-    markets = load_markets()[:limit]
+    with st.spinner("در حال دریافت فهرست بازار از نوبیتکس..."):
+        markets = load_markets()[:limit]
 except Exception as error:
-    st.error(f"خطا در دریافت اطلاعات نوبیتکس: {error}")
+    st.error(
+        "دریافت فهرست بازار از نوبیتکس ناموفق بود. "
+        "ممکن است API نوبیتکس موقتاً کند یا از سرور Render در دسترس نباشد."
+    )
+    st.code(str(error))
+    st.info("۳۰ تا ۶۰ ثانیه بعد روی «بروزرسانی تحلیل» بزن. اگر تکرار شد، بخش Logs در Render را بررسی می‌کنیم.")
     st.stop()
 
 if not markets:
-    st.warning("بازاری از نوبیتکس دریافت نشد.")
+    st.warning("نوبیتکس فهرست بازار خالی برگرداند؛ کمی بعد دوباره تلاش کن.")
     st.stop()
 
+# تحلیل کندل‌ها هم‌زمان انجام می‌شود تا ۲۰ درخواست پشت سر هم صفحه را معطل نکند.
 results = []
-progress = st.progress(0)
-for index, market in enumerate(markets):
-    try:
-        analysis, _ = load_analysis(
-            market["symbol"], timeframes[selected_timeframe]
+failed_symbols = []
+progress = st.progress(0, text="شروع تحلیل بازارها...")
+with ThreadPoolExecutor(max_workers=5) as executor:
+    futures = {
+        executor.submit(
+            load_analysis, market["symbol"], timeframes[selected_timeframe]
+        ): market
+        for market in markets
+    }
+    completed = 0
+    for future in as_completed(futures):
+        market = futures[future]
+        completed += 1
+        try:
+            analysis, _ = future.result()
+            if analysis:
+                results.append({**market, **analysis})
+            else:
+                failed_symbols.append(market["symbol"])
+        except Exception:
+            failed_symbols.append(market["symbol"])
+        progress.progress(
+            completed / len(markets),
+            text=f"تحلیل {completed} از {len(markets)} بازار..."
         )
-        if analysis:
-            results.append({**market, **analysis})
-    except Exception:
-        pass
-    progress.progress((index + 1) / len(markets))
 progress.empty()
+
+if failed_symbols:
+    st.caption(f"برای {len(failed_symbols)} بازار داده کندلی دریافت نشد؛ بقیه بازارها تحلیل شدند.")
 
 if not results:
     st.warning("در حال حاضر اطلاعات کافی برای تحلیل بازارها دریافت نشد.")
+    st.info("تایم‌فریم دیگری انتخاب کن یا کمی بعد دوباره بروزرسانی کن.")
     st.stop()
 
 df = pd.DataFrame(results)
